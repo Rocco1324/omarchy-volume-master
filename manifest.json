@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "community.volume-master-in-omarchy",
+  "name": "Volume master in Omarchy",
+  "version": "1.0.0",
+  "author": "Omarchy Community",
+  "description": "Audio controls with output volume up to 150%",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Volume master in Omarchy",
+    "description": "Volume slider, output picker, per-app mixer, and boost above 100%",
+    "category": "Audio",
+    "allowMultiple": false
+  }
+}
