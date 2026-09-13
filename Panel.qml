@@ -468,11 +468,7 @@ Panel {
     if (!node) return
     Pipewire.preferredDefaultAudioSink = node
     if (node.id !== undefined && node.name) {
-      Quickshell.execDetached([
-        "omarchy-audio-output-set-default",
-        String(node.id),
-        String(node.name)
-      ])
+      defaultSinkHelper.startDetached()
     }
   }
 
@@ -480,11 +476,7 @@ Panel {
     if (!node) return
     Pipewire.preferredDefaultAudioSource = node
     if (node.id !== undefined && node.name) {
-      Quickshell.execDetached([
-        "omarchy-audio-input-set-default",
-        String(node.id),
-        String(node.name)
-      ])
+      defaultSourceHelper.startDetached()
     }
   }
 
@@ -587,14 +579,42 @@ Panel {
     enabled: root.opened && !!root.source
   }
 
+  // Bounded stdout/stderr collector: accumulates at most maxBytes, then kills
+  // the source process so no fast producer can exhaust memory before the
+  // 5 s terminate/kill/reap deadline fires.
+  component BoundedCollector: DataStreamParser {
+    required property var targetProc
+    required property int maxBytes
+    property string accumulator: ""
+    property bool overflowed: false
+    signal finished(string result)
+    onRead: function(data) {
+      if (overflowed) return
+      if (accumulator.length + data.length > maxBytes) {
+        overflowed = true
+        targetProc.signal(15)
+        Qt.callLater(function() {
+          if (targetProc.running) targetProc.signal(9)
+        })
+        return
+      }
+      accumulator += data
+    }
+    onExited: function() {
+      if (!overflowed) finished(accumulator)
+    }
+  }
+
   Process {
     id: sinkAvailabilityProc
     command: ["/usr/bin/omarchy-audio-sink-availability"]
     clearEnvironment: true
     environment: ({ PATH: "/usr/bin:/bin" })
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.updateSinkAvailability(text)
+    stderr: StdioCollector { waitForEnd: true }
+    stdout: BoundedCollector {
+      targetProc: sinkAvailabilityProc
+      maxBytes: 8192
+      onFinished: root.updateSinkAvailability(result)
     }
   }
 
@@ -603,10 +623,28 @@ Panel {
     command: ["/usr/bin/omarchy-audio-output-sink"]
     clearEnvironment: true
     environment: ({ PATH: "/usr/bin:/bin" })
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.volumeSinkName = String(text).trim()
+    stderr: StdioCollector { waitForEnd: true }
+    stdout: BoundedCollector {
+      targetProc: volumeSinkProc
+      maxBytes: 8192
+      onFinished: root.volumeSinkName = String(result).trim()
     }
+  }
+
+  Process {
+    id: defaultSinkHelper
+    command: ["/usr/bin/omarchy-audio-output-set-default"]
+    clearEnvironment: true
+    environment: ({ PATH: "/usr/bin:/bin" })
+    stdinEnabled: false
+  }
+
+  Process {
+    id: defaultSourceHelper
+    command: ["/usr/bin/omarchy-audio-input-set-default"]
+    clearEnvironment: true
+    environment: ({ PATH: "/usr/bin:/bin" })
+    stdinEnabled: false
   }
 
   Timer {
@@ -615,13 +653,25 @@ Panel {
     repeat: false
     running: false
     onTriggered: {
-      if (sinkAvailabilityProc.running) {
-        sinkAvailabilityProc.signal(15)
-        Qt.callLater(function() { if (sinkAvailabilityProc.running) sinkAvailabilityProc.signal(9) })
+      // Terminal processes that are still alive.
+      var dead = []
+      if (sinkAvailabilityProc.running) dead.push(sinkAvailabilityProc)
+      if (volumeSinkProc.running) dead.push(volumeSinkProc)
+      for (var i = 0; i < dead.length; i++) {
+        dead[i].signal(15)
+        Qt.callLater(function() {
+          for (var j = 0; j < dead.length; j++)
+            if (dead[j].running) dead[j].signal(9)
+        })
       }
-      if (volumeSinkProc.running) {
-        volumeSinkProc.signal(15)
-        Qt.callLater(function() { if (volumeSinkProc.running) volumeSinkProc.signal(9) })
+      // Fire-and-forget helpers are also reaped if still lingering.
+      if (defaultSinkHelper.running) {
+        defaultSinkHelper.signal(15)
+        Qt.callLater(function() { if (defaultSinkHelper.running) defaultSinkHelper.signal(9) })
+      }
+      if (defaultSourceHelper.running) {
+        defaultSourceHelper.signal(15)
+        Qt.callLater(function() { if (defaultSourceHelper.running) defaultSourceHelper.signal(9) })
       }
     }
   }
